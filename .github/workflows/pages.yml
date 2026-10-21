@@ -5,7 +5,7 @@ name: Publish white paper
 on:
   push:
     branches: [main]
-    paths: ["docs/**", ".github/workflows/pages.yml"]
+    paths: ["docs/**", ".github/**"]
   workflow_dispatch:
 
 permissions:
@@ -30,9 +30,12 @@ jobs:
             --css style.css --metadata pagetitle="Home Tracing white paper" \
             -o _site/index.html
           docker run --rm -v "$PWD:/data" -u "$(id -u):$(id -g)" pandoc/core:3.5 \
-            docs/medium.md -f gfm -t html5 --standalone \
+            docs/medium.md -f gfm -t html5 --standalone --wrap=none --no-highlight \
             --css style.css --metadata pagetitle="Home Tracing: Self-Hosted Observability for a Home Lab" \
-            -o _site/medium.html
+            -o _site/medium-raw.html
+          # reshape for Medium's importer (keeps lists, line breaks and captions)
+          python3 .github/scripts/medium_html.py _site/medium-raw.html _site/medium.html
+          rm _site/medium-raw.html
           cp docs/style.css docs/architecture.png _site/
       - uses: actions/upload-pages-artifact@v3
         with: { path: _site }
