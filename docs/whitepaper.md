@@ -4,6 +4,8 @@ Nizanth · October 2026
 
 Status: early version, October 2026. Licensed under Apache-2.0.
 
+Code: [github.com/nizanth/home-observability](https://github.com/nizanth/home-observability)
+
 ## Abstract
 
 Home Tracing is a self-hosted observability stack that gives a home lab metrics, logs, traces and alerting from open-source components. The core stack starts with one `docker compose up`; device-specific exporters and database monitoring need editing first. Lightweight OpenTelemetry agents on Linux, macOS and Windows ship data to one central collector, which fans it out to Prometheus, Loki and Tempo. Grafana adds a status page, an end-to-end tracing view and anomaly detection. Anomaly bands compare each signal with its last hour and with the same hour a day and a week earlier. Alerts start after one day of history; the weekly comparison needs a week.
