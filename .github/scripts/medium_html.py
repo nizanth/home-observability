@@ -2,7 +2,7 @@
 
 - Labelled bullet lists (each item starts with bold text) become one paragraph per item.
 - Numbered lists become "Step N." paragraphs, numbered across code blocks.
-- Code blocks become <pre> with explicit <br> line breaks (Medium drops raw newlines).
+- Code blocks become <pre> with explicit <br> line breaks and &nbsp; indentation (Medium drops raw newlines and leading spaces).
 - A lone image becomes <figure> with its alt text as the caption.
 Usage: python medium_html.py in.html out.html
 """
@@ -34,7 +34,11 @@ def numbered_list(m):
 
 def code_block(m):
     text = html.unescape(re.sub(r"<[^>]+>", "", m.group(1))).rstrip("\n")
-    return "<pre>" + "<br>".join(html.escape(line) for line in text.split("\n")) + "</pre>"
+    def keep_indent(line):
+        body = line.lstrip(" ")
+        return "&nbsp;" * (len(line) - len(body)) + html.escape(body)
+
+    return "<pre>" + "<br>".join(keep_indent(line) for line in text.split("\n")) + "</pre>"
 
 
 def figure(m):
