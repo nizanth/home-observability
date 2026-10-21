@@ -1,0 +1,78 @@
+# Container metrics + logs for Docker on macOS (OrbStack / Docker Desktop). Runs as a container
+# inside the Docker VM, where /var/lib/docker/containers is readable. Env: GATEWAY_ENDPOINT
+receivers:
+  # Apps in containers send traces/metrics/logs here (otel-agent:4317 on the
+  # `proxy` docker network); forwarded to the gateway with this Mac's host.name.
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    api_version: "1.44" # Docker 29+ rejects the receiver's older default
+    collection_interval: 30s
+
+  # Container stdout/stderr via docker's json-file driver. The log-links sidecar
+  # keeps /names/<container-name>.log -> each container's log file, so the
+  # name comes from the file name (no daemon.json change / container restarts).
+  filelog/docker:
+    include: [/names/*.log]
+    include_file_name: true
+    start_at: end
+    operators:
+      - type: json_parser
+        parse_from: body
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%LZ"
+      - type: regex_parser
+        parse_from: attributes["log.file.name"]
+        regex: '^(?P<container_name>.+)\.log$'
+      - type: copy
+        from: attributes.container_name
+        to: resource["service.name"]
+      - type: move
+        from: attributes.container_name
+        to: resource["container.name"]
+      - type: severity_parser
+        if: 'attributes.stream == "stderr"'
+        parse_from: attributes.stream
+        mapping: { error: stderr }
+      - type: move
+        from: attributes.log
+        to: body
+      - type: remove
+        field: attributes.attrs
+        if: 'attributes.attrs != nil'
+      - type: remove
+        field: attributes.time
+
+processors:
+  memory_limiter: { check_interval: 5s, limit_mib: 256 }
+  resourcedetection:
+    detectors: [env, system]
+    system: { hostname_sources: [os] }
+  batch: { timeout: 5s }
+
+exporters:
+  otlp:
+    endpoint: ${env:GATEWAY_ENDPOINT}
+    tls: { insecure: true }
+    retry_on_failure: { enabled: true, max_elapsed_time: 0 } # keep retrying while gateway is down
+    sending_queue: { enabled: true, queue_size: 5000 }
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]
+    metrics:
+      receivers: [otlp, docker_stats]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp, filelog/docker]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]

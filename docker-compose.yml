@@ -1,0 +1,133 @@
+name: home-observability
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # ---- Ingestion: every log, metric and trace flows through here ----
+  otel-collector:
+    <<: *restart
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    user: "0:0" # needs docker.sock + /var/lib/docker/containers
+    environment:
+      # host.name for this machine (else the collector reports its container id)
+      OTEL_RESOURCE_ATTRIBUTES: host.name=${HOST_NAME:?set in .env}
+      POSTGRES_MONITOR_USER: ${POSTGRES_MONITOR_USER:-monitor}
+      POSTGRES_MONITOR_PASSWORD: ${POSTGRES_MONITOR_PASSWORD:?set in .env}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-app}
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /:/hostfs:ro,rslave
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4317:4317" # OTLP gRPC  (point your apps here)
+      - "4318:4318" # OTLP HTTP
+    networks: [default, app]
+    depends_on: [loki, tempo, prometheus]
+
+  # ---- Storage backends ----
+  loki:
+    <<: *restart
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+
+  tempo:
+    <<: *restart
+    image: grafana/tempo:2.7.0
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  prometheus:
+    <<: *restart
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${METRICS_RETENTION:-30d}
+      - --web.enable-remote-write-receiver # collector pushes metrics here
+      - --enable-feature=exemplar-storage # trace IDs on span metrics
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+
+  # ---- Dashboards + alerting ----
+  grafana:
+    <<: *restart
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      GF_PATHS_PROVISIONING: /tmp/provisioning
+    # Grafana's own ${VAR} expansion turns a numeric Telegram chat id into a
+    # number and rejects it, so substitute it into a copy of the provisioning.
+    entrypoint:
+      - sh
+      - -c
+      - rm -rf /tmp/provisioning &&
+        cp -r /etc/grafana/provisioning /tmp/provisioning &&
+        sed -i "s/__TELEGRAM_CHAT_ID__/$$TELEGRAM_CHAT_ID/" /tmp/provisioning/alerting/alerts.yaml &&
+        exec /run.sh
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on: [loki, tempo, prometheus]
+
+  # ---- Network exporters ----
+  adguard-exporter:
+    <<: *restart
+    image: ghcr.io/henrywhitaker3/adguard-exporter:v1.2.1
+    environment:
+      ADGUARD_SERVERS: ${ADGUARD_URL:-http://192.168.1.2}
+      ADGUARD_USERNAMES: ${ADGUARD_USER:-}
+      ADGUARD_PASSWORDS: ${ADGUARD_PASSWORD:-}
+      INTERVAL: 30s
+
+  # Host NIC counters. Reads /proc/1/net (the host's network namespace); the
+  # collector's hostmetrics scraper can only see its own container's interfaces.
+  node-exporter:
+    <<: *restart
+    image: prom/node-exporter:v1.9.1
+    command:
+      - --path.procfs=/host/proc/1
+      - --collector.disable-defaults
+      - --collector.netdev
+      - --no-collector.netdev.netlink # netlink would report the container's own netns
+      - --collector.netdev.device-exclude=^(lo|veth.*|br-.*|docker.*)$$
+    volumes:
+      - /proc:/host/proc:ro
+
+  router-exporter:
+    <<: *restart
+    build: ./router-exporter
+    environment:
+      ROUTER_HOST: ${ROUTER_HOST:-192.168.1.1}
+      ROUTER_USER: ${ROUTER_USER:-admin}
+      ROUTER_PASSWORD: ${ROUTER_PASSWORD:-}
+      ROUTER_INTERVAL: "60"
+
+networks:
+  app: # lets the collector reach your app's Postgres (host "db"); create it or remove it and the postgresql receiver
+    name: ${APP_NETWORK:-app_default}
+    external: true
+
+volumes:
+  loki-data:
+  tempo-data:
+  prometheus-data:
+  grafana-data:

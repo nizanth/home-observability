@@ -1,0 +1,193 @@
+receivers:
+  # Apps that speak OTel natively send here
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+  # Host + container metrics
+  hostmetrics:
+    collection_interval: 30s
+    root_path: /hostfs
+    scrapers:
+      cpu:
+        metrics: { system.cpu.utilization: { enabled: true } }
+      memory:
+        metrics: { system.memory.utilization: { enabled: true } }
+      load: {}
+      # network: node-exporter reads the host's counters (this scraper only sees the container's netns)
+      disk: {}
+      filesystem:
+        metrics: { system.filesystem.utilization: { enabled: true } }
+        exclude_mount_points:
+          mount_points: [/dev/*, /proc/*, /sys/*, /run/*, /var/lib/docker/*]
+          match_type: regexp
+
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    api_version: "1.44" # Docker 29+ rejects the receiver's older default
+    collection_interval: 30s
+
+  # Black-box uptime checks for every website on the network.
+  # EDIT: add your services here.
+  httpcheck:
+    collection_interval: 30s
+    targets:
+      - { endpoint: "http://host.docker.internal:8080/", method: GET }          # a web app on this host
+      # A public site behind a bot challenge (e.g. Cloudflare) answers probes with 403; add a WAF skip rule first:
+      # - { endpoint: "https://app.example.com/", method: GET }
+      - { endpoint: "http://host.docker.internal:1234/v1/models", method: GET } # LM Studio
+      - { endpoint: "http://192.168.1.2/login.html", method: GET }             # AdGuard Home (DNS)
+      - { endpoint: "http://192.168.1.1/", method: GET }                        # router web UI
+      # - { endpoint: "http://host.docker.internal:8096/health", method: GET }  # Jellyfin
+
+  # Prometheus-style endpoints (exporters, Jellyfin /metrics)
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: adguard
+          scrape_interval: 30s
+          static_configs: [{ targets: ["adguard-exporter:9618"] }]
+        - job_name: router
+          scrape_interval: 60s
+          static_configs: [{ targets: ["router-exporter:9100"] }]
+        - job_name: node
+          scrape_interval: 30s
+          static_configs: [{ targets: ["node-exporter:9100"] }]
+        # - job_name: jellyfin
+        #   scrape_interval: 30s
+        #   metrics_path: /metrics
+        #   static_configs: [{ targets: ["host.docker.internal:8096"] }]
+
+  # Optional: an app's Postgres (the collector joins that app's docker network, see docker-compose.yml)
+  postgresql:
+    endpoint: db:5432
+    transport: tcp
+    username: ${env:POSTGRES_MONITOR_USER}
+    password: ${env:POSTGRES_MONITOR_PASSWORD}
+    databases: ["${env:POSTGRES_DATABASE}"]
+    collection_interval: 30s
+    tls: { insecure: true }
+
+  # Container stdout/stderr via docker's json-file driver
+  filelog/docker:
+    include: [/var/lib/docker/containers/*/*-json.log]
+    exclude: [/var/lib/docker/containers/*/*-json.log.*]
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: json_parser
+        parse_from: body
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%LZ"
+      - type: regex_parser
+        parse_from: attributes["log.file.path"]
+        regex: '/containers/(?P<container_id>[a-f0-9]{12})'
+        on_error: send
+      # Compose service name is present if docker's daemon.json sets
+      # log-opts.labels-regex (see README); otherwise falls back to container id.
+      - type: move
+        if: 'attributes.attrs != nil and attributes.attrs["com.docker.compose.service"] != nil'
+        from: attributes.attrs["com.docker.compose.service"]
+        to: resource["service.name"]
+      - type: move
+        if: 'resource["service.name"] == nil'
+        from: attributes.container_id
+        to: resource["service.name"]
+      - type: severity_parser
+        if: 'attributes.stream == "stderr"'
+        parse_from: attributes.stream
+        mapping: { error: stderr }
+      - type: move
+        from: attributes.log
+        to: body
+      - type: remove
+        field: attributes.attrs
+        if: 'attributes.attrs != nil'
+      - type: remove
+        field: attributes.time
+
+processors:
+  # add_metric_suffixes is off, but Grafana's service map looks for the
+  # service graph latency histograms under their *_seconds names
+  metricstransform/servicegraph:
+    transforms:
+      - include: ^traces_service_graph_request_(server|client)$$
+        match_type: regexp
+        action: update
+        new_name: traces_service_graph_request_$${1}_seconds
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+  resourcedetection:
+    override: false # keep host.name sent by LAN agents
+    detectors: [env, system]
+    system: { hostname_sources: [os] }
+  batch:
+    timeout: 5s
+  # count connector emits delta sums, which prometheusremotewrite drops
+  deltatocumulative: {}
+
+connectors:
+  # Log lines per service (and error-level lines) as metrics, so log volume
+  # can feed anomaly detection.
+  count:
+    logs:
+      log_records:
+        description: Log records per service
+      log_error_records:
+        description: Error-level log records per service
+        conditions:
+          - severity_number >= SEVERITY_NUMBER_ERROR
+  # Derive RED metrics (rate / errors / duration) from traces
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    # Attach trace IDs to the metrics so Grafana can jump from a latency
+    # point on a chart to the trace behind it
+    exemplars:
+      enabled: true
+  # Service-to-service request/error/latency edges for Grafana's service map.
+  # Calls to uninstrumented things (databases, external APIs) show as
+  # virtual nodes named after the peer attribute.
+  servicegraph:
+    latency_histogram_buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    dimensions: [host.name]
+    virtual_node_peer_attributes: [peer.service, db.name, db.system, server.address, net.peer.name]
+    store:
+      ttl: 10s
+      max_items: 1000
+
+exporters:
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls: { insecure: true }
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    add_metric_suffixes: false # keep names predictable: httpcheck_status, etc.
+    resource_to_telemetry_conversion: { enabled: true }
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus: { host: 0.0.0.0, port: 8888 }
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/tempo, spanmetrics, servicegraph]
+    metrics:
+      receivers: [otlp, hostmetrics, docker_stats, httpcheck, prometheus, postgresql, spanmetrics, servicegraph, count]
+      processors: [memory_limiter, resourcedetection, deltatocumulative, metricstransform/servicegraph, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp, filelog/docker]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlphttp/loki, count]

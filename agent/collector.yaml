@@ -1,0 +1,111 @@
+# Agent: collects this machine's host/container metrics and logs, plus OTLP
+# from local apps, and forwards everything to the central stack.
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+  # Host + container metrics
+  hostmetrics:
+    collection_interval: 30s
+    root_path: /hostfs
+    scrapers:
+      cpu:
+        metrics: { system.cpu.utilization: { enabled: true } }
+      memory:
+        metrics: { system.memory.utilization: { enabled: true } }
+      load: {}
+      # network: node-exporter reads the host's counters (this scraper only sees the container's netns)
+      disk: {}
+      filesystem:
+        metrics: { system.filesystem.utilization: { enabled: true } }
+        exclude_mount_points:
+          mount_points: [/dev/*, /proc/*, /sys/*, /run/*, /var/lib/docker/*]
+          match_type: regexp
+
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    api_version: "1.44" # Docker 29+ rejects the receiver's older default
+    collection_interval: 30s
+
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: node
+          scrape_interval: 30s
+          static_configs: [{ targets: ["node-exporter:9100"] }]
+        # Add /metrics endpoints of apps on this machine here:
+        # - job_name: myapp
+        #   static_configs: [{ targets: ["host.docker.internal:9100"] }]
+
+  # Container stdout/stderr via docker's json-file driver
+  filelog/docker:
+    include: [/var/lib/docker/containers/*/*-json.log]
+    exclude: [/var/lib/docker/containers/*/*-json.log.*]
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: json_parser
+        parse_from: body
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%LZ"
+      - type: regex_parser
+        parse_from: attributes["log.file.path"]
+        regex: '/containers/(?P<container_id>[a-f0-9]{12})'
+        on_error: send
+      # Compose service name is present if docker's daemon.json sets
+      # log-opts.labels-regex (see README); otherwise falls back to container id.
+      - type: move
+        if: 'attributes.attrs != nil and attributes.attrs["com.docker.compose.service"] != nil'
+        from: attributes.attrs["com.docker.compose.service"]
+        to: resource["service.name"]
+      - type: move
+        if: 'resource["service.name"] == nil'
+        from: attributes.container_id
+        to: resource["service.name"]
+      - type: severity_parser
+        if: 'attributes.stream == "stderr"'
+        parse_from: attributes.stream
+        mapping: { error: stderr }
+      - type: move
+        from: attributes.log
+        to: body
+      - type: remove
+        field: attributes.attrs
+        if: 'attributes.attrs != nil'
+      - type: remove
+        field: attributes.time
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+  resourcedetection: # stamps host.name so dashboards can split by machine
+    detectors: [env, system]
+    system: { hostname_sources: [os] }
+  batch:
+    timeout: 5s
+
+exporters:
+  otlp/central:
+    endpoint: ${env:CENTRAL_HOST}:4317
+    tls: { insecure: true }
+    sending_queue: { enabled: true }
+    retry_on_failure: { enabled: true }
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/central]
+    metrics:
+      receivers: [otlp, hostmetrics, docker_stats, prometheus]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/central]
+    logs:
+      receivers: [otlp, filelog/docker]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp/central]

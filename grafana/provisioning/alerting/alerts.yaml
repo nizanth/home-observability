@@ -1,0 +1,219 @@
+apiVersion: 1
+
+deleteContactPoints:
+  - orgId: 1
+    uid: home-webhook
+
+contactPoints:
+  - orgId: 1
+    name: home-telegram
+    receivers:
+      - uid: home-telegram
+        type: telegram
+        settings:
+          bottoken: ${TELEGRAM_BOT_TOKEN}
+          chatid: "__TELEGRAM_CHAT_ID__" # filled in at container start (see docker-compose.yml)
+          parse_mode: HTML
+
+policies:
+  - orgId: 1
+    receiver: home-telegram
+    group_by: [alertname, http_url]
+    repeat_interval: 4h
+    routes:
+      # One message per host when containers stop (e.g. a whole machine down)
+      - receiver: home-telegram
+        object_matchers: [["alertname", "=", "Container down"]]
+        group_by: [alertname, host_name]
+        group_wait: 30s
+        repeat_interval: 4h
+      # One Telegram message per kind of anomaly, not one per series
+      - receiver: home-telegram
+        object_matchers: [["alertname", "=", "Anomaly detected"]]
+        group_by: [alertname, anomaly_name]
+        group_wait: 1m
+        group_interval: 15m
+        repeat_interval: 12h
+
+groups:
+  - orgId: 1
+    name: home-services
+    folder: Home
+    interval: 1m
+    rules:
+      - uid: site-down
+        title: Site down
+        condition: C
+        for: 2m
+        noDataState: Alerting # no data = collector/probe broken, also worth knowing
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.http_url }} is not answering with 2xx/3xx"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: sum by (http_url) (httpcheck_status{http_status_class=~"2xx|3xx"})
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: lt, params: [1] } }]
+
+      - uid: disk-full
+        title: Disk almost full
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.host_name }} {{ $labels.mountpoint }} is over 90% full"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: max by (host_name, mountpoint) (system_filesystem_utilization{state="used"})
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [0.9] } }]
+
+      - uid: container-memory-high
+        title: Container memory high
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.container_name }} is using over 90% of its memory limit"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: max by (container_name) (container_memory_percent)
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions: [{ evaluator: { type: gt, params: [90] } }]
+
+      # Long-running containers (30+ min in the last day) that have stopped
+      # (home:service:* rules in prometheus/rules/home-status.yml). A container
+      # removed on purpose keeps firing until it drops off after a day, so
+      # silence it in Grafana if that's expected.
+      - uid: container-down
+        title: Container down
+        condition: C
+        for: 2m
+        noDataState: OK # no series = no container is down
+        execErrState: Error
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.name }} on {{ $labels.host_name }} is not running (down for at least {{ humanizeDuration $values.B.Value }})"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: |-
+                max by (name, host_name) (home:service:unhealthy_seconds{kind="Container"}) > 0
+                # skip one-off containers (docker run tests, etc.): only alert
+                # on containers that ran for at least 30 minutes in the last day
+                and on (name, host_name)
+                count_over_time(home:service:healthy{kind="Container"}[1d]) >= 30
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 300, to: 0 }
+            model:
+              refId: C
+              type: math
+              expression: "$B > 0"
+
+  # Anomalies: series outside the adaptive bands computed by Prometheus
+  # (prometheus/rules/anomaly-*.yml). No data means nothing is anomalous.
+  - orgId: 1
+    name: anomalies
+    folder: Home
+    interval: 1m
+    rules:
+      - uid: anomaly-detected
+        title: Anomaly detected
+        condition: C
+        for: 15m
+        noDataState: OK
+        execErrState: Error
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $labels.anomaly_name }} · {{ $labels.subject }} is {{ $labels.direction }} its normal range (now {{ humanize $values.B.Value }})"
+          dashboard: "Home > Anomalies (anomaly_name={{ $labels.anomaly_name }})"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 600, to: 0 }
+            model:
+              refId: A
+              instant: true
+              expr: |-
+                max by (anomaly_name, anomaly_type, subject, direction) (
+                  label_replace(
+                    last_over_time(anomaly:level[2m]) > last_over_time(anomaly:upper_band{anomaly_strategy="adaptive"}[2m]),
+                    "direction", "above", "", "")
+                  or
+                  label_replace(
+                    last_over_time(anomaly:level[2m]) < last_over_time(anomaly:lower_band{anomaly_strategy="adaptive"}[2m]),
+                    "direction", "below", "", "")
+                )
+                # learning period: only series that already existed a day ago
+                and on (anomaly_name, subject)
+                max by (anomaly_name, subject) (last_over_time(anomaly:adaptive:select[1h] offset 1d))
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 600, to: 0 }
+            model: { refId: B, type: reduce, expression: A, reducer: last }
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: { from: 600, to: 0 }
+            model:
+              refId: C
+              type: math
+              expression: "$B == $B" # any returned series is anomalous

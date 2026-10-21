@@ -1,0 +1,17 @@
+# For ADDITIONAL Linux machines. (The gateway host already runs this agent
+# as `otel-agent` inside stack/docker-compose.yml.)
+#   GATEWAY_ENDPOINT=<central-host>:4317 docker compose up -d
+services:
+  otel-agent:
+    image: otel/opentelemetry-collector-contrib:0.116.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    user: "0:0"
+    environment:
+      GATEWAY_ENDPOINT: ${GATEWAY_ENDPOINT:?set to gateway-host:4317}
+      HOST_ROOT_PATH: /hostfs
+    volumes:
+      - ./agent.yaml:/etc/otelcol/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /:/hostfs:ro,rslave

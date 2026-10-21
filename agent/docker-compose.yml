@@ -1,0 +1,36 @@
+# Lightweight collector for other machines on the LAN.
+# Copy this folder to the machine, then:
+#   CENTRAL_HOST=<central-host-ip> HOST_NAME=$(hostname) docker compose up -d
+name: otel-agent
+
+services:
+  otel-agent:
+    restart: unless-stopped
+    image: otel/opentelemetry-collector-contrib:0.130.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    user: "0:0" # needs docker.sock + /var/lib/docker/containers
+    environment:
+      CENTRAL_HOST: ${CENTRAL_HOST:?set CENTRAL_HOST to the central host}
+      # host.name for this machine (else the agent reports its container id)
+      OTEL_RESOURCE_ATTRIBUTES: host.name=${HOST_NAME:?set HOST_NAME to this machine's name}
+    volumes:
+      - ./collector.yaml:/etc/otelcol/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /:/hostfs:ro,rslave
+    ports:
+      - "4317:4317" # apps on this machine can send OTLP here
+      - "4318:4318"
+
+  # Host NIC counters via /proc/1/net (the host's network namespace)
+  node-exporter:
+    restart: unless-stopped
+    image: prom/node-exporter:v1.9.1
+    command:
+      - --path.procfs=/host/proc/1
+      - --collector.disable-defaults
+      - --collector.netdev
+      - --no-collector.netdev.netlink
+      - --collector.netdev.device-exclude=^(lo|veth.*|br-.*|docker.*)$$
+    volumes:
+      - /proc:/host/proc:ro

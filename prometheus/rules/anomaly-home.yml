@@ -1,0 +1,232 @@
+# Metrics tagged for anomaly detection (strategy: anomaly-adaptive.yml).
+#   anomaly_type: resource = unusual in either direction
+#                 requests = either direction, sparse series ignored
+#                 latency/errors = only increases are anomalous
+# "subject" names the thing (container, URL, client...) in alerts and dashboards.
+# Note: the framework ignores samples <= 0, so errors that are normally zero
+# are covered by threshold alerts rather than by this.
+groups:
+  - name: AnomalyInputsHost
+    rules:
+      - record: anomaly:input:host_cpu
+        expr: >-
+          label_join(100 * (1 - avg by (host_name) (system_cpu_utilization{state="idle"})), "subject", " ", "host_name")
+        labels:
+          anomaly_name: host_cpu
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:host_memory
+        expr: >-
+          label_join(100 * sum by (host_name) (system_memory_utilization{state="used"}), "subject", " ", "host_name")
+        labels:
+          anomaly_name: host_memory
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:host_load
+        expr: >-
+          label_join(max by (host_name) (system_cpu_load_average_5m), "subject", " ", "host_name")
+        labels:
+          anomaly_name: host_load
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:host_disk_io
+        expr: >-
+          label_join(sum by (host_name, direction) (rate(system_disk_io{device!~"loop.*|ram.*"}[5m])), "subject", " ", "host_name", "direction")
+        labels:
+          anomaly_name: host_disk_io
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:host_network_rx
+        expr: >-
+          label_join(sum by (host_name, device) (rate(node_network_receive_bytes_total[5m])), "subject", " ", "host_name", "device")
+        labels:
+          anomaly_name: host_network_rx
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:host_network_tx
+        expr: >-
+          label_join(sum by (host_name, device) (rate(node_network_transmit_bytes_total[5m])), "subject", " ", "host_name", "device")
+        labels:
+          anomaly_name: host_network_tx
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:host_network_errors
+        expr: >-
+          label_join(sum by (host_name, device) (rate(node_network_receive_errs_total[5m]) + rate(node_network_transmit_errs_total[5m]) + rate(node_network_receive_drop_total[5m]) + rate(node_network_transmit_drop_total[5m])), "subject", " ", "host_name", "device")
+        labels:
+          anomaly_name: host_network_errors
+          anomaly_type: errors
+          anomaly_strategy: adaptive
+
+  - name: AnomalyInputsContainers
+    rules:
+      - record: anomaly:input:container_cpu
+        expr: >-
+          label_join(sum by (host_name, container_name) (container_cpu_utilization), "subject", " ", "container_name")
+        labels:
+          anomaly_name: container_cpu
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:container_memory
+        expr: >-
+          label_join(sum by (host_name, container_name) (container_memory_usage_total), "subject", " ", "container_name")
+        labels:
+          anomaly_name: container_memory
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:container_network
+        expr: >-
+          label_join(sum by (host_name, container_name) (rate(container_network_io_usage_rx_bytes[5m]) + rate(container_network_io_usage_tx_bytes[5m])), "subject", " ", "container_name")
+        labels:
+          anomaly_name: container_network
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+
+  - name: AnomalyInputsServices
+    rules:
+      - record: anomaly:input:probe_latency
+        expr: >-
+          label_join(max by (http_url) (httpcheck_duration), "subject", " ", "http_url")
+        labels:
+          anomaly_name: probe_latency
+          anomaly_type: latency
+          anomaly_strategy: adaptive
+      - record: anomaly:input:log_volume
+        expr: |-
+          # container logs carry a 12-char container id as service_name: map it to the container name
+          label_join(
+            sum by (service_name) (rate(log_records[5m])) * on (service_name) group_left (container_name) group by (service_name, container_name) (label_replace(container_memory_usage_total, "service_name", "$1", "container_id", "(.{12}).*")),
+            "subject", " ", "container_name")
+          or
+          label_join(
+            sum by (service_name) (rate(log_records[5m])) unless on (service_name) group by (service_name, container_name) (label_replace(container_memory_usage_total, "service_name", "$1", "container_id", "(.{12}).*")),
+            "subject", " ", "service_name")
+        labels:
+          anomaly_name: log_volume
+          anomaly_type: requests
+          anomaly_strategy: adaptive
+      - record: anomaly:input:log_errors
+        expr: |-
+          # container logs carry a 12-char container id as service_name: map it to the container name
+          label_join(
+            sum by (service_name) (rate(log_error_records[5m])) * on (service_name) group_left (container_name) group by (service_name, container_name) (label_replace(container_memory_usage_total, "service_name", "$1", "container_id", "(.{12}).*")),
+            "subject", " ", "container_name")
+          or
+          label_join(
+            sum by (service_name) (rate(log_error_records[5m])) unless on (service_name) group by (service_name, container_name) (label_replace(container_memory_usage_total, "service_name", "$1", "container_id", "(.{12}).*")),
+            "subject", " ", "service_name")
+        labels:
+          anomaly_name: log_errors
+          anomaly_type: errors
+          anomaly_strategy: adaptive
+      - record: anomaly:input:service_requests
+        expr: >-
+          label_join(sum by (service_name) (rate(traces_span_metrics_calls[5m])), "subject", " ", "service_name")
+        labels:
+          anomaly_name: service_requests
+          anomaly_type: requests
+          anomaly_strategy: adaptive
+      - record: anomaly:input:service_errors
+        expr: >-
+          label_join(sum by (service_name) (rate(traces_span_metrics_calls{status_code="STATUS_CODE_ERROR"}[5m])), "subject", " ", "service_name")
+        labels:
+          anomaly_name: service_errors
+          anomaly_type: errors
+          anomaly_strategy: adaptive
+      - record: anomaly:input:service_latency_p95
+        expr: >-
+          label_join(histogram_quantile(0.95, sum by (service_name, le) (rate(traces_span_metrics_duration_bucket[5m]))), "subject", " ", "service_name")
+        labels:
+          anomaly_name: service_latency_p95
+          anomaly_type: latency
+          anomaly_strategy: adaptive
+
+  - name: AnomalyInputsPostgres
+    rules:
+      - record: anomaly:input:pg_transactions
+        expr: >-
+          label_join(sum by (postgresql_database_name) (rate(postgresql_commits[5m])), "subject", " ", "postgresql_database_name")
+        labels:
+          anomaly_name: pg_transactions
+          anomaly_type: requests
+          anomaly_strategy: adaptive
+      - record: anomaly:input:pg_rollbacks
+        expr: >-
+          label_join(sum by (postgresql_database_name) (rate(postgresql_rollbacks[5m])), "subject", " ", "postgresql_database_name")
+        labels:
+          anomaly_name: pg_rollbacks
+          anomaly_type: errors
+          anomaly_strategy: adaptive
+      - record: anomaly:input:pg_connections
+        expr: >-
+          label_join(sum by (postgresql_database_name) (postgresql_backends), "subject", " ", "postgresql_database_name")
+        labels:
+          anomaly_name: pg_connections
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:pg_row_ops
+        expr: >-
+          label_join(sum by (postgresql_table_name, operation) (rate(postgresql_operations[5m])), "subject", " ", "postgresql_table_name", "operation")
+        labels:
+          anomaly_name: pg_row_ops
+          anomaly_type: requests
+          anomaly_strategy: adaptive
+      - record: anomaly:input:pg_db_size
+        expr: >-
+          label_join(sum by (postgresql_database_name) (postgresql_db_size), "subject", " ", "postgresql_database_name")
+        labels:
+          anomaly_name: pg_db_size
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+
+  - name: AnomalyInputsNetwork
+    rules:
+      - record: anomaly:input:dns_queries
+        expr: >-
+          label_replace(sum(rate(adguard_processing_time_seconds_count[5m])), "subject", "adguard", "", "")
+        labels:
+          anomaly_name: dns_queries
+          anomaly_type: requests
+          anomaly_strategy: adaptive
+      - record: anomaly:input:dns_queries_by_client
+        expr: >-
+          label_join(sum by (client) (rate(adguard_processing_time_seconds_count[5m])), "subject", " ", "client")
+        labels:
+          anomaly_name: dns_queries_by_client
+          anomaly_type: requests
+          anomaly_strategy: adaptive
+      - record: anomaly:input:dns_latency
+        expr: >-
+          label_replace(max(adguard_avg_processing_time_seconds), "subject", "adguard", "", "")
+        labels:
+          anomaly_name: dns_latency
+          anomaly_type: latency
+          anomaly_strategy: adaptive
+      - record: anomaly:input:dns_upstream_latency
+        expr: >-
+          label_join(max by (upstream) (adguard_top_upstreams_avg_response_time_seconds), "subject", " ", "upstream")
+        labels:
+          anomaly_name: dns_upstream_latency
+          anomaly_type: latency
+          anomaly_strategy: adaptive
+      - record: anomaly:input:dns_block_ratio
+        expr: >-
+          label_replace(sum(adguard_queries_blocked) / sum(adguard_queries), "subject", "adguard", "", "")
+        labels:
+          anomaly_name: dns_block_ratio
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:wifi_devices
+        expr: >-
+          label_join(sum by (connection_type) (router_connected_devices), "subject", " ", "connection_type")
+        labels:
+          anomaly_name: wifi_devices
+          anomaly_type: resource
+          anomaly_strategy: adaptive
+      - record: anomaly:input:wan_throughput
+        expr: >-
+          label_join(sum by (direction) (clamp_min(deriv(router_wan_traffic_megabytes{period="today"}[15m]), 0)), "subject", " ", "direction")
+        labels:
+          anomaly_name: wan_throughput
+          anomaly_type: resource
+          anomaly_strategy: adaptive

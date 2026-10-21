@@ -1,0 +1,40 @@
+# Container metrics + logs on a Mac running Docker (OrbStack / Docker Desktop).
+# The native launchd agent (../install.sh) covers the Mac itself; this covers containers.
+#   GATEWAY_ENDPOINT=<central-host>:4317 docker compose up -d
+services:
+  otel-agent-containers:
+    image: otel/opentelemetry-collector-contrib:0.130.0 # same as gateway; 0.116.0 arm64 image fails to exec under OrbStack
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    user: "0:0"
+    environment:
+      GATEWAY_ENDPOINT: ${GATEWAY_ENDPOINT:?set to gateway-host:4317}
+      # Report as the Mac, not the container (env detector runs before system)
+      OTEL_RESOURCE_ATTRIBUTES: host.name=${HOST_NAME:?set HOST_NAME to this Mac's name}
+    volumes:
+      - ./agent.yaml:/etc/otelcol/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Resolved inside the Docker VM, where container log files live
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - log-names:/names:ro
+    networks:
+      default: {}
+      proxy: { aliases: [otel-agent] } # apps send OTLP to otel-agent:4317 / :4318
+
+  # Keeps /names/<container-name>.log symlinks so logs are labelled by name
+  log-links:
+    image: alpine:3.20
+    restart: unless-stopped
+    command: ["sh", "/log-links.sh"]
+    volumes:
+      - ./log-links.sh:/log-links.sh:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - log-names:/names
+
+volumes:
+  log-names:
+
+# Shared with your reverse proxy and apps; create it first (docker network create proxy) or rename it
+networks:
+  proxy:
+    external: true

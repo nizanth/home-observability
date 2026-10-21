@@ -1,0 +1,61 @@
+# Service status for the Home Overview dashboard.
+#
+# home:service:healthy is 1 for every service that is healthy right now
+# (labels: kind, name, host_name) and absent otherwise. Because recording
+# rules write a staleness marker when a series disappears, the age of its last
+# sample tells how long a service has been unhealthy, without remembering
+# hosts/containers that existed before this rule did.
+groups:
+  - name: HomeStatus
+    rules:
+      - record: home:service:healthy
+        expr: |-
+          label_replace(label_replace(
+            group by (host_name) (last_over_time(system_cpu_load_average_1m[2m])),
+            "kind", "Host", "", ""), "name", "$1", "host_name", "(.*)")
+          or
+          # one-off "docker compose run" containers are not services
+          label_replace(label_replace(
+            group by (host_name, container_name) (last_over_time(container_cpu_utilization{container_name!~".+-run-[0-9a-f]{12}"}[2m])),
+            "kind", "Container", "", ""), "name", "$1", "container_name", "(.*)")
+          or
+          label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+            max by (host_name, http_url) (last_over_time(httpcheck_status{http_status_class=~"2xx|3xx"}[2m])) == 1,
+            "kind", "Website", "", ""),
+            "name", "$1", "http_url", "(.*)"),
+            "name", "Web app", "http_url", ".*:8080/.*"),
+            "name", "LM Studio", "http_url", ".*:1234/.*"),
+            "name", "AdGuard Home web", "http_url", "http://192\\.168\\.1\\.2/.*"),
+            "name", "Router web", "http_url", "http://192\\.168\\.1\\.1/.*")
+          or
+          label_replace(label_replace(
+            group by (host_name, postgresql_database_name) (last_over_time(postgresql_backends[2m])),
+            "kind", "Database", "", ""), "name", "postgres/$1", "postgresql_database_name", "(.*)")
+          or
+          label_replace(label_replace(
+            max by (host_name) (last_over_time(router_up[2m])) == 1,
+            "kind", "Network", "", ""), "name", "Router", "", "")
+          or
+          label_replace(label_replace(
+            max by (host_name) (last_over_time(adguard_running[2m])) == 1,
+            "kind", "Network", "", ""), "name", "AdGuard DNS", "", "")
+          or
+          label_replace(label_replace(
+            max by (host_name) (last_over_time(adguard_protection_enabled[2m])) == 1,
+            "kind", "Network", "", ""), "name", "AdGuard protection", "", "")
+          or
+          label_replace(label_replace(
+            max by (host_name, job) (last_over_time(up{job=~"adguard|router|node"}[2m])) == 1,
+            "kind", "Exporter", "", ""), "name", "$1-exporter", "job", "(.*)")
+          or
+          label_replace(label_replace(
+            max by (job) (up{job=~"prometheus|otel-collector"}) == 1,
+            "kind", "Monitoring", "", ""), "name", "$1", "job", "(.*)")
+
+      # Seconds since each service was last healthy (0 while healthy).
+      # Services unhealthy for more than a day drop out.
+      - record: home:service:unhealthy_seconds
+        expr: |-
+          clamp_min(
+            time() - max by (kind, name, host_name) (max_over_time(timestamp(home:service:healthy)[1d:1m])) - 90,
+            0)

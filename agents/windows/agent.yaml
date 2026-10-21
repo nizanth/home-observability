@@ -1,0 +1,51 @@
+# Windows agent (native Windows service). Env: GATEWAY_ENDPOINT = host:4317
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+        metrics: { system.cpu.utilization: { enabled: true } }
+      memory:
+        metrics: { system.memory.utilization: { enabled: true } }
+      network: {}
+      disk: {}
+      filesystem:
+        metrics: { system.filesystem.utilization: { enabled: true } }
+
+  # Windows Event Log
+  windowseventlog/application:
+    channel: application
+  windowseventlog/system:
+    channel: system
+
+  # App log files. EDIT: add the log paths of the services on this machine.
+  filelog/apps:
+    include:
+      - C:\ProgramData\Jellyfin\Server\log\*.log
+    start_at: end
+    include_file_name: true
+
+processors:
+  memory_limiter: { check_interval: 5s, limit_mib: 256 }
+  resourcedetection:
+    detectors: [env, system]
+    system: { hostname_sources: [os] }
+  batch: { timeout: 5s }
+
+exporters:
+  otlp:
+    endpoint: ${env:GATEWAY_ENDPOINT}
+    tls: { insecure: true }
+    retry_on_failure: { enabled: true, max_elapsed_time: 0 }
+    sending_queue: { enabled: true, queue_size: 5000 }
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]
+    logs:
+      receivers: [windowseventlog/application, windowseventlog/system, filelog/apps]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]

@@ -1,0 +1,51 @@
+# macOS agent (native, launchd). Env: GATEWAY_ENDPOINT = host:4317
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+        metrics: { system.cpu.utilization: { enabled: true } }
+      memory:
+        metrics: { system.memory.utilization: { enabled: true } }
+      load: {}
+      network: {}
+      disk: {}
+      filesystem:
+        metrics: { system.filesystem.utilization: { enabled: true } }
+        exclude_mount_points:
+          mount_points: [/dev/*, "/System/Volumes/(VM|Preboot|Update|xarts|iSCPreboot|Hardware)"]
+          match_type: regexp
+
+  # App / system log files. EDIT: add the log paths of the services on this Mac.
+  filelog/apps:
+    include:
+      - ${env:HOME}/Library/Logs/*.log
+      # - /opt/homebrew/var/log/*.log
+      # - ${env:HOME}/Library/Application Support/jellyfin/log/*.log
+    start_at: end
+    include_file_name: true
+
+processors:
+  memory_limiter: { check_interval: 5s, limit_mib: 256 }
+  resourcedetection:
+    detectors: [env, system]
+    system: { hostname_sources: [os] }
+  batch: { timeout: 5s }
+
+exporters:
+  otlp:
+    endpoint: ${env:GATEWAY_ENDPOINT}
+    tls: { insecure: true }
+    retry_on_failure: { enabled: true, max_elapsed_time: 0 } # laptops sleep; keep retrying
+    sending_queue: { enabled: true, queue_size: 5000 }
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]
+    logs:
+      receivers: [filelog/apps]
+      processors: [memory_limiter, resourcedetection, batch]
+      exporters: [otlp]

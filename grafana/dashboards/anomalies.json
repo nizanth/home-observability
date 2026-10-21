@@ -1,0 +1,367 @@
+{
+  "uid": "anomalies",
+  "title": "Anomalies",
+  "tags": [
+    "home",
+    "anomaly"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "description": "Signals outside adaptive bands (grafana/promql-anomaly-detection). Bands learn from the last 26h plus the same hour yesterday and last week.",
+  "templating": {
+    "list": [
+      {
+        "name": "anomaly_name",
+        "label": "Signal",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(anomaly:level, anomaly_name)",
+          "refId": "v1"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false
+      },
+      {
+        "name": "subject",
+        "label": "Subject",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(anomaly:level{anomaly_name=\"$anomaly_name\"}, subject)",
+          "refId": "v2"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Anomalous series now",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(max by (anomaly_name, anomaly_type, subject, direction) (\n  label_replace(last_over_time(anomaly:level[2m]) > last_over_time(anomaly:upper_band{anomaly_strategy=\"adaptive\"}[2m]), \"direction\", \"above\", \"\", \"\")\n  or\n  label_replace(last_over_time(anomaly:level[2m]) < last_over_time(anomaly:lower_band{anomaly_strategy=\"adaptive\"}[2m]), \"direction\", \"below\", \"\", \"\")\n)) or vector(0)",
+          "legendFormat": "",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Current anomalies",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 20,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (anomaly_name, anomaly_type, subject, direction) (\n  label_replace(last_over_time(anomaly:level[2m]) > last_over_time(anomaly:upper_band{anomaly_strategy=\"adaptive\"}[2m]), \"direction\", \"above\", \"\", \"\")\n  or\n  label_replace(last_over_time(anomaly:level[2m]) < last_over_time(anomaly:lower_band{anomaly_strategy=\"adaptive\"}[2m]), \"direction\", \"below\", \"\", \"\")\n)",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "anomaly_name": 0,
+              "subject": 1,
+              "direction": 2,
+              "anomaly_type": 3,
+              "Value": 4
+            },
+            "renameByName": {
+              "anomaly_name": "signal",
+              "Value": "current value"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Anomalous series over time (by signal)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count by (anomaly_name) (max by (anomaly_name, anomaly_type, subject, direction) (\n  label_replace(last_over_time(anomaly:level[2m]) > last_over_time(anomaly:upper_band{anomaly_strategy=\"adaptive\"}[2m]), \"direction\", \"above\", \"\", \"\")\n  or\n  label_replace(last_over_time(anomaly:level[2m]) < last_over_time(anomaly:lower_band{anomaly_strategy=\"adaptive\"}[2m]), \"direction\", \"below\", \"\", \"\")\n))",
+          "legendFormat": "{{anomaly_name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "right"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Normal band: $anomaly_name",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "$anomaly_name \u00b7 $subject",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 8,
+        "h": 8
+      },
+      "repeat": "subject",
+      "repeatDirection": "h",
+      "maxPerRow": 3,
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "last_over_time(anomaly:upper_band{anomaly_strategy=\"adaptive\", anomaly_name=\"$anomaly_name\", subject=\"$subject\"}[2m])",
+          "legendFormat": "upper"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "last_over_time(anomaly:lower_band{anomaly_strategy=\"adaptive\", anomaly_name=\"$anomaly_name\", subject=\"$subject\"}[2m])",
+          "legendFormat": "lower"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "anomaly:level{anomaly_name=\"$anomaly_name\", subject=\"$subject\"}",
+          "legendFormat": "actual"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "upper"
+            },
+            "properties": [
+              {
+                "id": "custom.fillBelowTo",
+                "value": "lower"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 20
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8ab8ff"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "lower"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8ab8ff"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "actual"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ff9830"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}
