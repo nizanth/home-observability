@@ -29,6 +29,10 @@ jobs:
             docs/whitepaper.md -f gfm -t html5 --standalone --toc --toc-depth=2 \
             --css style.css --metadata pagetitle="Home Tracing white paper" \
             -o _site/index.html
+          docker run --rm -v "$PWD:/data" -u "$(id -u):$(id -g)" pandoc/core:3.5 \
+            docs/medium.md -f gfm -t html5 --standalone \
+            --css style.css --metadata pagetitle="Home Tracing: Self-Hosted Observability for a Home Lab" \
+            -o _site/medium.html
           cp docs/style.css docs/architecture.png _site/
       - uses: actions/upload-pages-artifact@v3
         with: { path: _site }
