@@ -60,7 +60,7 @@ plus the same hour yesterday and last week, so routine daily/weekly patterns are
 - Ports 4317/4318 have no auth; keep them LAN-only.
 
 ## White paper
-[docs/whitepaper.md](docs/whitepaper.md) explains the design: architecture, agents, anomaly detection, security trade-offs and configuration examples.
+[Read it online](https://nizanth.github.io/home-observability/) or in [docs/whitepaper.md](docs/whitepaper.md). It explains the design: architecture, agents, anomaly detection, security trade-offs and configuration examples.
 
 ## License
 Apache License 2.0, see [LICENSE](LICENSE). `prometheus/rules/anomaly-adaptive.yml` is vendored from
