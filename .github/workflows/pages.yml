@@ -1,0 +1,44 @@
+# Builds docs/whitepaper.md into a static page with Pandoc and publishes it to GitHub Pages.
+# Pandoc (not Jekyll) is used so the {{ ... }} alert templates in code samples are left as-is.
+name: Publish white paper
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build HTML
+        run: |
+          mkdir -p _site
+          docker run --rm -v "$PWD:/data" -u "$(id -u):$(id -g)" pandoc/core:3.5 \
+            docs/whitepaper.md -f gfm -t html5 --standalone --toc --toc-depth=2 \
+            --css style.css --metadata pagetitle="Home Tracing white paper" \
+            -o _site/index.html
+          cp docs/style.css docs/architecture.png _site/
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
