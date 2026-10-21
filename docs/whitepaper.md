@@ -166,13 +166,17 @@ Inside the network, the stack assumes a trusted LAN. These measures limit what a
 
 ## Getting started
 
-The core stack starts with one command on the central host, after a few edits for your own devices.
+The core stack starts with one command on the central host, after a few edits for your own devices. First clone the repository and change into it.
 
 1. Copy `.env.example` to `.env` and set `HOST_NAME`, `GRAFANA_ADMIN_PASSWORD` and `POSTGRES_MONITOR_PASSWORD`. Compose refuses to start without them.
 2. Edit or remove the device-specific parts: the DNS filter and router exporters, the PostgreSQL receiver and the external Docker network it joins, and the HTTP probe targets.
-3. Start the stack, then install one agent per additional machine.
+3. Start the stack, then install one agent per additional machine from the same clone.
 
 ```bash
+# get the code
+git clone https://github.com/nizanth/home-observability.git
+cd home-observability
+
 # central host
 cp .env.example .env   # then edit it
 docker compose up -d

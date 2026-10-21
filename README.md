@@ -12,6 +12,7 @@
 
 ## Run
 ```
+git clone https://github.com/nizanth/home-observability.git && cd home-observability
 cp .env.example .env   # fill in passwords, AdGuard/router creds, Telegram bot
 docker compose up -d
 open http://localhost:3000   # Home > Home Overview
